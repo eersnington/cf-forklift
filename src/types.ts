@@ -5,8 +5,10 @@ import type {
 	WorkflowStepRollbackOptions,
 } from "cloudflare:workers";
 
+/** @internal Symbol used to attach implementation state to fork objects. */
 export const forkState = Symbol("cf-forklift.forkState");
 
+/** Serializable value shape accepted by Cloudflare Workflow step output. */
 export type Serializable<T> = T extends
 	| undefined
 	| null
@@ -32,6 +34,8 @@ export type Serializable<T> = T extends
 					: never;
 
 export type MarkerMode = "off" | "minimal" | "summary";
+
+/** @internal Resolved cooperative abort policy for a join run. */
 export type AbortOnFailure = "none" | "cooperative";
 
 /**
@@ -45,7 +49,7 @@ export type AbortOnFailure = "none" | "cooperative";
  * });
  * ```
  */
-export type WorkflowOptions = {
+export interface WorkflowOptions {
 	/**
 	 * Separator used when cf-forklift creates Cloudflare step names.
 	 *
@@ -67,7 +71,7 @@ export type WorkflowOptions = {
 	 * @default "summary"
 	 */
 	readonly markers?: MarkerMode;
-};
+}
 
 /**
  * Options for `workflow.join.required()`.
@@ -79,7 +83,7 @@ export type WorkflowOptions = {
  * });
  * ```
  */
-export type RequiredJoinOptions = {
+export interface RequiredJoinOptions {
 	/**
 	 * Requests cooperative abort after the first branch failure.
 	 *
@@ -89,7 +93,7 @@ export type RequiredJoinOptions = {
 	 * primitive.
 	 */
 	readonly abortOnFailure?: "cooperative";
-};
+}
 
 /**
  * Reason attached to a branch that stopped after a cooperative abort request.
@@ -101,14 +105,14 @@ export type RequiredJoinOptions = {
  * }
  * ```
  */
-export type ForkAbortReason = {
+export interface ForkAbortReason {
 	/** The kind of event that requested cooperative abort. */
 	readonly type: "branch-failure";
 	/** The fork whose branch work was aborted. */
 	readonly forkName: string;
 	/** The branch whose failure requested cooperative abort. */
 	readonly sourceBranchName: string;
-};
+}
 
 /**
  * Branch-local cooperative abort helper.
@@ -127,7 +131,7 @@ export type ForkAbortReason = {
  * });
  * ```
  */
-export type ForkCancellation = {
+export interface ForkCancellation {
 	/**
 	 * Standard `AbortSignal` for abort-aware user code such as `fetch`.
 	 */
@@ -148,7 +152,7 @@ export type ForkCancellation = {
 	 * Throws `ForkAbortError` if cooperative abort has been requested.
 	 */
 	throwIfRequested(): void;
-};
+}
 
 /**
  * Outcome for one branch in a settled join or failed required join.
@@ -163,26 +167,32 @@ export type ForkCancellation = {
  * ```
  */
 export type WorkflowOutcome<T> =
-	| {
-			/** Branch completed successfully. */
-			readonly status: "success";
-			/** Value returned by the branch. */
-			readonly value: T;
-		}
-	| {
-			/** Branch threw a non-abort error. */
-			readonly status: "failure";
-			/** Original branch error. */
-			readonly error: unknown;
-		}
-	| {
-			/** Branch observed cooperative abort and skipped future work. */
-			readonly status: "aborted";
-			/** Reason the branch stopped. */
-			readonly reason: ForkAbortReason;
-		};
+	| WorkflowSuccess<T>
+	| WorkflowFailure
+	| WorkflowAborted;
 
-export type ScopedWorkflowStep = {
+interface WorkflowSuccess<T> {
+	/** Branch completed successfully. */
+	readonly status: "success";
+	/** Value returned by the branch. */
+	readonly value: T;
+}
+
+interface WorkflowFailure {
+	/** Branch threw a non-abort error. */
+	readonly status: "failure";
+	/** Original branch error. */
+	readonly error: unknown;
+}
+
+interface WorkflowAborted {
+	/** Branch observed cooperative abort and skipped future work. */
+	readonly status: "aborted";
+	/** Reason the branch stopped. */
+	readonly reason: ForkAbortReason;
+}
+
+export interface ScopedWorkflowStep {
 	/**
 	 * Runs a Cloudflare Workflow step with the current fork and branch name
 	 * prefixed onto the step name.
@@ -223,7 +233,7 @@ export type ScopedWorkflowStep = {
 
 	/** Runs a branch-scoped Cloudflare `step.waitForEvent()`. */
 	waitForEvent: WorkflowStep["waitForEvent"];
-};
+}
 
 /**
  * Context passed to each fork branch.
@@ -239,7 +249,7 @@ export type ScopedWorkflowStep = {
  * });
  * ```
  */
-export type BranchContext = {
+export interface BranchContext {
 	/** Branch-scoped Workflow step helpers. */
 	readonly step: ScopedWorkflowStep;
 
@@ -254,7 +264,7 @@ export type BranchContext = {
 
 	/** Cooperative abort helper for branch checkpoints. */
 	readonly cancellation: ForkCancellation;
-};
+}
 
 /** Function that runs one fork branch. */
 export type BranchFactory<TResult> = (
@@ -271,43 +281,49 @@ export type SettledJoinResult<TBranches extends BranchRecord> = {
 	[K in keyof TBranches]: WorkflowOutcome<Awaited<ReturnType<TBranches[K]>>>;
 };
 
+/** @internal Join policy used when emitting markers and running branch work. */
 export type JoinPolicy = "required" | "settled";
 
-export type ForkMarker = {
+/** @internal Structured value returned by summary fork marker steps. */
+export interface ForkMarker {
 	readonly type: "fork";
 	readonly name: string;
 	readonly branches: string[];
 	readonly policy: JoinPolicy;
 	readonly abortOnFailure: AbortOnFailure;
-};
+}
 
-export type JoinMarker = {
+/** @internal Structured value returned by summary join marker steps. */
+export interface JoinMarker {
 	readonly type: "join";
 	readonly name: string;
 	readonly policy: JoinPolicy;
 	readonly abortOnFailure: AbortOnFailure;
 	readonly status: "success" | "failure";
 	readonly branches: Record<string, WorkflowOutcome<unknown>["status"]>;
-};
+}
 
-export type ForkRun = {
+/** @internal Per-join execution state shared by branch contexts. */
+export interface ForkRun {
 	readonly forkName: string;
 	readonly abortOnFailure: AbortOnFailure;
 	readonly controller: AbortController;
 	abortReason: ForkAbortReason | undefined;
-};
+}
 
-export type ForkState = {
+/** @internal Mutable state captured by a lazily constructed fork. */
+export interface ForkState {
 	readonly name: string;
 	readonly rootStep: WorkflowStep;
 	readonly options: RequiredWorkflowOptions;
 	readonly branches: Map<string, BranchFactory<unknown>>;
-};
+}
 
-export type RequiredWorkflowOptions = {
+/** @internal Fully resolved `withWorkflow()` options. */
+export interface RequiredWorkflowOptions {
 	readonly stepNameSeparator: string;
 	readonly markers: MarkerMode;
-};
+}
 
 /**
  * A lazily constructed fork.
@@ -352,7 +368,7 @@ export type RequiredWorkflowOptions = {
  * const result = await workflow.join.required(checks);
  * ```
  */
-export type Fork<TBranches extends BranchRecord> = {
+export interface Fork<TBranches extends BranchRecord> {
 	/**
 	 * Name used as the fork scope in marker steps and branch step names.
 	 */
@@ -376,8 +392,9 @@ export type Fork<TBranches extends BranchRecord> = {
 		name: TName,
 		factory: BranchFactory<TResult>
 	): Fork<TBranches & Record<TName, BranchFactory<TResult>>>;
-};
+}
 
+/** @internal Fork object plus hidden implementation state. */
 export type InternalFork<TBranches extends BranchRecord> = Fork<TBranches> & {
 	readonly [forkState]: ForkState;
 };
@@ -415,7 +432,7 @@ export type InternalFork<TBranches extends BranchRecord> = Fork<TBranches> & {
  * const outcomes = await workflow.join.settled(enrichment);
  * ```
  */
-export type Workflow = {
+export interface Workflow {
 	/**
 	 * Creates a fork from a static branch record.
 	 *
@@ -440,6 +457,9 @@ export type Workflow = {
 	 *
 	 * Use this form when branch names come from runtime data. Branch names still
 	 * must be deterministic and unique within the fork.
+	 *
+	 * Runtime dynamic branches work normally, but TypeScript only preserves exact
+	 * result keys when branch names are known as literal types.
 	 *
 	 * @example
 	 * ```ts
@@ -506,4 +526,4 @@ export type Workflow = {
 			fork: Fork<TBranches>
 		): Promise<SettledJoinResult<TBranches>>;
 	};
-};
+}
