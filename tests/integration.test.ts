@@ -76,12 +76,57 @@ describe("cf-forklift integration", () => {
 		try {
 			const error = await run.introspector.getError();
 			expect(error.message).toContain("Fork \"verify merchant\" failed");
+			await expect(
+				run.introspector.waitForStepResult({ name: "verify merchant / join" })
+			).resolves.toEqual({
+				type: "join",
+				name: "verify merchant",
+				policy: "required",
+				status: "failure",
+				branches: {
+					profile: "success",
+					bank: "failure",
+					risk: "success",
+				},
+			});
 			await expect(getStepNames(run.testId)).resolves.toEqual(expect.arrayContaining([
 				"verify merchant / verify profile",
 				"verify merchant / verify bank",
 				"verify merchant / screen risk",
 				"fork join error",
 			]));
+		} finally {
+			await run.dispose();
+		}
+	});
+
+	it("emits summary marker steps by default", async () => {
+		const run = await waitForWorkflow(
+			{ scenario: "summary-markers-default" },
+			"complete"
+		);
+
+		try {
+			await expect(
+				run.introspector.waitForStepResult({ name: "verify merchant / fork" })
+			).resolves.toEqual({
+				type: "fork",
+				name: "verify merchant",
+				branches: ["profile", "bank"],
+				policy: "required",
+			});
+			await expect(
+				run.introspector.waitForStepResult({ name: "verify merchant / join" })
+			).resolves.toEqual({
+				type: "join",
+				name: "verify merchant",
+				policy: "required",
+				status: "success",
+				branches: {
+					profile: "success",
+					bank: "success",
+				},
+			});
 		} finally {
 			await run.dispose();
 		}

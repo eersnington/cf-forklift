@@ -31,14 +31,11 @@ type Serializable<T> = T extends
 						}
 					: never;
 
-type RequiredFailureMode = "throwAfterDrain" | "failFast";
-
-type MarkerMode = "off" | "minimal";
+type MarkerMode = "off" | "minimal" | "summary";
 
 export type WorkflowOptions = {
 	readonly stepNameSeparator?: string;
 	readonly markers?: MarkerMode;
-	readonly defaultRequiredFailureMode?: RequiredFailureMode;
 };
 
 export type WorkflowOutcome<T> =
@@ -82,6 +79,23 @@ type SettledJoinResult<TBranches extends BranchRecord> = {
 	[K in keyof TBranches]: WorkflowOutcome<Awaited<ReturnType<TBranches[K]>>>;
 };
 
+type JoinPolicy = "required" | "settled";
+
+type ForkMarker = {
+	readonly type: "fork";
+	readonly name: string;
+	readonly branches: string[];
+	readonly policy: JoinPolicy;
+};
+
+type JoinMarker = {
+	readonly type: "join";
+	readonly name: string;
+	readonly policy: JoinPolicy;
+	readonly status: "success" | "failure";
+	readonly branches: Record<string, "success" | "failure">;
+};
+
 type ForkState = {
 	readonly name: string;
 	readonly rootStep: WorkflowStep;
@@ -92,7 +106,6 @@ type ForkState = {
 type RequiredWorkflowOptions = {
 	readonly stepNameSeparator: string;
 	readonly markers: MarkerMode;
-	readonly defaultRequiredFailureMode: RequiredFailureMode;
 };
 
 export type Fork<TBranches extends BranchRecord> = {
@@ -115,8 +128,7 @@ export type Workflow = {
 	fork(name: string): Fork<Record<never, never>>;
 	readonly join: {
 		required<TBranches extends BranchRecord>(
-			fork: Fork<TBranches>,
-			options?: { readonly failureMode?: RequiredFailureMode }
+			fork: Fork<TBranches>
 		): Promise<RequiredJoinResult<TBranches>>;
 		settled<TBranches extends BranchRecord>(
 			fork: Fork<TBranches>
@@ -153,9 +165,7 @@ export function withWorkflow(
 ): Workflow {
 	const resolvedOptions = {
 		stepNameSeparator: options.stepNameSeparator ?? " / ",
-		markers: options.markers ?? "off",
-		defaultRequiredFailureMode:
-			options.defaultRequiredFailureMode ?? "throwAfterDrain",
+		markers: options.markers ?? "summary",
 	} satisfies RequiredWorkflowOptions;
 
 	return {
@@ -163,7 +173,7 @@ export function withWorkflow(
 			return createFork(step, name, resolvedOptions, branches);
 		},
 		join: {
-			required: (fork, options) => joinRequired(fork, options),
+			required: (fork) => joinRequired(fork),
 			settled: (fork) => joinSettled(fork),
 		},
 	};
@@ -207,21 +217,11 @@ function createFork(
 }
 
 async function joinRequired<TBranches extends BranchRecord>(
-	fork: Fork<TBranches>,
-	options: { readonly failureMode?: RequiredFailureMode } = {}
+	fork: Fork<TBranches>
 ): Promise<RequiredJoinResult<TBranches>> {
-	const internalFork = fork as InternalFork<TBranches>;
-	const failureMode =
-		options.failureMode ?? internalFork[forkState].options.defaultRequiredFailureMode;
-
-	if (failureMode === "failFast") {
-		await emitMarker(fork, "fork");
-		const values = await runBranches(fork);
-		await emitMarker(fork, "join");
-		return values as RequiredJoinResult<TBranches>;
-	}
-
-	const outcomes = await joinSettled(fork);
+	await emitForkMarker(fork, "required");
+	const outcomes = await runBranchesSettled(fork);
+	await emitJoinMarker(fork, "required", outcomes);
 
 	if (Object.values(outcomes).some((outcome) => outcome.status === "failure")) {
 		throw new ForkJoinError({
@@ -236,11 +236,19 @@ async function joinRequired<TBranches extends BranchRecord>(
 async function joinSettled<TBranches extends BranchRecord>(
 	fork: Fork<TBranches>
 ): Promise<SettledJoinResult<TBranches>> {
+	await emitForkMarker(fork, "settled");
+	const outcomes = await runBranchesSettled(fork);
+	await emitJoinMarker(fork, "settled", outcomes);
+
+	return outcomes;
+}
+
+async function runBranchesSettled<TBranches extends BranchRecord>(
+	fork: Fork<TBranches>
+): Promise<SettledJoinResult<TBranches>> {
 	const internalFork = fork as InternalFork<TBranches>;
 	const state = internalFork[forkState];
 	const step = scopedStep(state);
-
-	await emitMarker(fork, "fork");
 
 	const entries = await Promise.all(
 		Array.from(state.branches.entries()).map(async ([branchName, factory]) => {
@@ -258,32 +266,7 @@ async function joinSettled<TBranches extends BranchRecord>(
 		})
 	);
 
-	await emitMarker(fork, "join");
-
 	return Object.fromEntries(entries) as SettledJoinResult<TBranches>;
-}
-
-async function runBranches<TBranches extends BranchRecord>(
-	fork: Fork<TBranches>
-): Promise<Record<string, unknown>> {
-	const internalFork = fork as InternalFork<TBranches>;
-	const state = internalFork[forkState];
-	const step = scopedStep(state);
-
-	const entries = await Promise.all(
-		Array.from(state.branches.entries()).map(
-			async ([branchName, factory]) => [
-				branchName,
-				await factory({
-					step,
-					forkName: fork.name,
-					branchName,
-				}),
-			]
-		)
-	);
-
-	return Object.fromEntries(entries);
 }
 
 function scopedStep(state: ForkState): ScopedWorkflowStep {
@@ -339,9 +322,9 @@ function scopedStep(state: ForkState): ScopedWorkflowStep {
 	};
 }
 
-async function emitMarker<TBranches extends BranchRecord>(
+async function emitForkMarker<TBranches extends BranchRecord>(
 	fork: Fork<TBranches>,
-	marker: "fork" | "join"
+	policy: JoinPolicy
 ): Promise<void> {
 	const state = (fork as InternalFork<TBranches>)[forkState];
 
@@ -349,10 +332,59 @@ async function emitMarker<TBranches extends BranchRecord>(
 		return;
 	}
 
-	await state.rootStep.do(
-		`${state.name}${state.options.stepNameSeparator}${marker}`,
-		async () => undefined
+	const markerName = `${state.name}${state.options.stepNameSeparator}fork`;
+
+	if (state.options.markers === "minimal") {
+		await state.rootStep.do(markerName, async () => undefined);
+		return;
+	}
+
+	const marker: ForkMarker = {
+		type: "fork",
+		name: state.name,
+		branches: Array.from(state.branches.keys()),
+		policy,
+	};
+
+	await state.rootStep.do(markerName, async () => marker);
+}
+
+async function emitJoinMarker<TBranches extends BranchRecord>(
+	fork: Fork<TBranches>,
+	policy: JoinPolicy,
+	outcomes: Record<string, WorkflowOutcome<unknown>>
+): Promise<void> {
+	const state = (fork as InternalFork<TBranches>)[forkState];
+
+	if (state.options.markers === "off") {
+		return;
+	}
+
+	const markerName = `${state.name}${state.options.stepNameSeparator}join`;
+
+	if (state.options.markers === "minimal") {
+		await state.rootStep.do(markerName, async () => undefined);
+		return;
+	}
+
+	const branches = Object.fromEntries(
+		Object.entries(outcomes).map(([branchName, outcome]) => [
+			branchName,
+			outcome.status,
+		])
 	);
+
+	const marker: JoinMarker = {
+		type: "join",
+		name: state.name,
+		policy,
+		status: Object.values(branches).some((status) => status === "failure")
+			? "failure"
+			: "success",
+		branches,
+	};
+
+	await state.rootStep.do(markerName, async () => marker);
 }
 
 function successfulValues<TBranches extends BranchRecord>(

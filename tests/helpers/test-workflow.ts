@@ -8,6 +8,7 @@ import { ForkJoinError, withWorkflow } from "../../src/index.ts";
 export type TestScenario =
 	| "required-success"
 	| "required-failure-drains"
+	| "summary-markers-default"
 	| "minimal-markers";
 
 export type TestParams = {
@@ -33,6 +34,8 @@ export class TestWorkflow extends WorkflowEntrypoint<TestEnv, TestParams> {
 				return this.requiredSuccess(event.payload.testId, step);
 			case "required-failure-drains":
 				return this.requiredFailureDrains(event.payload.testId, step);
+			case "summary-markers-default":
+				return this.summaryMarkersDefault(event.payload.testId, step);
 			case "minimal-markers":
 				return this.minimalMarkers(event.payload.testId, step);
 		}
@@ -95,6 +98,26 @@ export class TestWorkflow extends WorkflowEntrypoint<TestEnv, TestParams> {
 
 			throw error;
 		}
+	}
+
+	private async summaryMarkersDefault(testId: string, step: WorkflowStep) {
+		const workflow = withWorkflow(step);
+		const fork = workflow.fork("verify merchant", {
+			profile: ({ step }) =>
+				step.do("verify profile", async () => {
+					await this.log(testId, "verify merchant / verify profile");
+					return "profile-ok";
+				}),
+			bank: ({ step }) =>
+				step.do("verify bank", async () => {
+					await this.log(testId, "verify merchant / verify bank");
+					return "bank-ok";
+				}),
+		});
+
+		await workflow.join.required(fork);
+
+		return { ok: true };
 	}
 
 	private async minimalMarkers(testId: string, step: WorkflowStep) {
