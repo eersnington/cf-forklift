@@ -32,15 +32,34 @@ type Serializable<T> = T extends
 					: never;
 
 type MarkerMode = "off" | "minimal" | "summary";
+type AbortOnFailure = "none" | "cooperative";
 
 export type WorkflowOptions = {
 	readonly stepNameSeparator?: string;
 	readonly markers?: MarkerMode;
 };
 
+export type RequiredJoinOptions = {
+	readonly abortOnFailure?: "cooperative";
+};
+
+export type ForkAbortReason = {
+	readonly type: "branch-failure";
+	readonly forkName: string;
+	readonly sourceBranchName: string;
+};
+
+export type ForkCancellation = {
+	readonly signal: AbortSignal;
+	readonly requested: boolean;
+	readonly reason: ForkAbortReason | undefined;
+	throwIfRequested(): void;
+};
+
 export type WorkflowOutcome<T> =
 	| { readonly status: "success"; readonly value: T }
-	| { readonly status: "failure"; readonly error: unknown };
+	| { readonly status: "failure"; readonly error: unknown }
+	| { readonly status: "aborted"; readonly reason: ForkAbortReason };
 
 type ScopedWorkflowStep = {
 	do<T>(
@@ -63,6 +82,8 @@ type BranchContext = {
 	readonly step: ScopedWorkflowStep;
 	readonly forkName: string;
 	readonly branchName: string;
+	readonly signal: AbortSignal;
+	readonly cancellation: ForkCancellation;
 };
 
 type BranchFactory<TResult> = (
@@ -86,14 +107,23 @@ type ForkMarker = {
 	readonly name: string;
 	readonly branches: string[];
 	readonly policy: JoinPolicy;
+	readonly abortOnFailure: AbortOnFailure;
 };
 
 type JoinMarker = {
 	readonly type: "join";
 	readonly name: string;
 	readonly policy: JoinPolicy;
+	readonly abortOnFailure: AbortOnFailure;
 	readonly status: "success" | "failure";
-	readonly branches: Record<string, "success" | "failure">;
+	readonly branches: Record<string, WorkflowOutcome<unknown>["status"]>;
+};
+
+type ForkRun = {
+	readonly forkName: string;
+	readonly abortOnFailure: AbortOnFailure;
+	readonly controller: AbortController;
+	abortReason: ForkAbortReason | undefined;
 };
 
 type ForkState = {
@@ -128,7 +158,8 @@ export type Workflow = {
 	fork(name: string): Fork<Record<never, never>>;
 	readonly join: {
 		required<TBranches extends BranchRecord>(
-			fork: Fork<TBranches>
+			fork: Fork<TBranches>,
+			options?: RequiredJoinOptions
 		): Promise<RequiredJoinResult<TBranches>>;
 		settled<TBranches extends BranchRecord>(
 			fork: Fork<TBranches>
@@ -159,6 +190,26 @@ export class ForkJoinError extends Error {
 	}
 }
 
+export class ForkAbortError extends Error {
+	readonly forkName: string;
+	readonly branchName: string;
+	readonly reason: ForkAbortReason;
+
+	constructor(options: {
+		readonly forkName: string;
+		readonly branchName: string;
+		readonly reason: ForkAbortReason;
+	}) {
+		super(
+			`Branch "${options.branchName}" in fork "${options.forkName}" stopped because branch "${options.reason.sourceBranchName}" failed. Completed branch work was preserved; future branch work was skipped cooperatively.`
+		);
+		this.name = "ForkAbortError";
+		this.forkName = options.forkName;
+		this.branchName = options.branchName;
+		this.reason = options.reason;
+	}
+}
+
 export function withWorkflow(
 	step: WorkflowStep,
 	options: WorkflowOptions = {}
@@ -173,7 +224,7 @@ export function withWorkflow(
 			return createFork(step, name, resolvedOptions, branches);
 		},
 		join: {
-			required: (fork) => joinRequired(fork),
+			required: (fork, options) => joinRequired(fork, options),
 			settled: (fork) => joinSettled(fork),
 		},
 	};
@@ -217,13 +268,15 @@ function createFork(
 }
 
 async function joinRequired<TBranches extends BranchRecord>(
-	fork: Fork<TBranches>
+	fork: Fork<TBranches>,
+	options: RequiredJoinOptions = {}
 ): Promise<RequiredJoinResult<TBranches>> {
-	await emitForkMarker(fork, "required");
-	const outcomes = await runBranchesSettled(fork);
-	await emitJoinMarker(fork, "required", outcomes);
+	const abortOnFailure = options.abortOnFailure ?? "none";
+	await emitForkMarker(fork, "required", abortOnFailure);
+	const outcomes = await runBranchesSettled(fork, abortOnFailure);
+	await emitJoinMarker(fork, "required", abortOnFailure, outcomes);
 
-	if (Object.values(outcomes).some((outcome) => outcome.status === "failure")) {
+	if (Object.values(outcomes).some((outcome) => outcome.status !== "success")) {
 		throw new ForkJoinError({
 			forkName: fork.name,
 			outcomes: outcomes as Record<string, WorkflowOutcome<unknown>>,
@@ -236,31 +289,53 @@ async function joinRequired<TBranches extends BranchRecord>(
 async function joinSettled<TBranches extends BranchRecord>(
 	fork: Fork<TBranches>
 ): Promise<SettledJoinResult<TBranches>> {
-	await emitForkMarker(fork, "settled");
-	const outcomes = await runBranchesSettled(fork);
-	await emitJoinMarker(fork, "settled", outcomes);
+	await emitForkMarker(fork, "settled", "none");
+	const outcomes = await runBranchesSettled(fork, "none");
+	await emitJoinMarker(fork, "settled", "none", outcomes);
 
 	return outcomes;
 }
 
 async function runBranchesSettled<TBranches extends BranchRecord>(
-	fork: Fork<TBranches>
+	fork: Fork<TBranches>,
+	abortOnFailure: AbortOnFailure
 ): Promise<SettledJoinResult<TBranches>> {
 	const internalFork = fork as InternalFork<TBranches>;
 	const state = internalFork[forkState];
-	const step = scopedStep(state);
+	const run: ForkRun = {
+		forkName: fork.name,
+		abortOnFailure,
+		controller: new AbortController(),
+		abortReason: undefined,
+	};
 
 	const entries = await Promise.all(
 		Array.from(state.branches.entries()).map(async ([branchName, factory]) => {
+			const cancellation = createForkCancellation(run, branchName);
+			const step = scopedStep(state, cancellation);
+
 			try {
 				const value = await factory({
 					step,
 					forkName: fork.name,
 					branchName,
+					signal: run.controller.signal,
+					cancellation,
 				});
 
 				return [branchName, { status: "success", value }] as const;
 			} catch (error) {
+				if (error instanceof ForkAbortError) {
+					return [
+						branchName,
+						{ status: "aborted", reason: error.reason },
+					] as const;
+				}
+
+				if (run.abortOnFailure === "cooperative") {
+					requestForkAbort(run, branchName);
+				}
+
 				return [branchName, { status: "failure", error }] as const;
 			}
 		})
@@ -269,7 +344,10 @@ async function runBranchesSettled<TBranches extends BranchRecord>(
 	return Object.fromEntries(entries) as SettledJoinResult<TBranches>;
 }
 
-function scopedStep(state: ForkState): ScopedWorkflowStep {
+function scopedStep(
+	state: ForkState,
+	cancellation: ForkCancellation
+): ScopedWorkflowStep {
 	const prefix = (name: string) =>
 		`${state.name}${state.options.stepNameSeparator}${name}`;
 
@@ -294,6 +372,8 @@ function scopedStep(state: ForkState): ScopedWorkflowStep {
 			| WorkflowStepRollbackOptions<T>,
 		rollbackOptions?: WorkflowStepRollbackOptions<T>
 	): Promise<Serializable<T>> {
+		cancellation.throwIfRequested();
+
 		return (typeof configOrCallback === "function"
 			? state.rootStep.do(
 					prefix(name),
@@ -314,17 +394,64 @@ function scopedStep(state: ForkState): ScopedWorkflowStep {
 
 	return {
 		do: doStep,
-		sleep: (name, duration) => state.rootStep.sleep(prefix(name), duration),
-		sleepUntil: (name, timestamp) =>
-			state.rootStep.sleepUntil(prefix(name), timestamp),
-		waitForEvent: (name, options) =>
-			state.rootStep.waitForEvent(prefix(name), options),
+		sleep: (name, duration) => {
+			cancellation.throwIfRequested();
+			return state.rootStep.sleep(prefix(name), duration);
+		},
+		sleepUntil: (name, timestamp) => {
+			cancellation.throwIfRequested();
+			return state.rootStep.sleepUntil(prefix(name), timestamp);
+		},
+		waitForEvent: (name, options) => {
+			cancellation.throwIfRequested();
+			return state.rootStep.waitForEvent(prefix(name), options);
+		},
 	};
+}
+
+function createForkCancellation(
+	run: ForkRun,
+	branchName: string
+): ForkCancellation {
+	return {
+		signal: run.controller.signal,
+		get requested() {
+			return run.controller.signal.aborted;
+		},
+		get reason() {
+			return run.abortReason;
+		},
+		throwIfRequested() {
+			if (run.abortReason === undefined) {
+				return;
+			}
+
+			throw new ForkAbortError({
+				forkName: run.forkName,
+				branchName,
+				reason: run.abortReason,
+			});
+		},
+	};
+}
+
+function requestForkAbort(run: ForkRun, sourceBranchName: string): void {
+	if (run.abortReason !== undefined) {
+		return;
+	}
+
+	run.abortReason = {
+		type: "branch-failure",
+		forkName: run.forkName,
+		sourceBranchName,
+	};
+	run.controller.abort(run.abortReason);
 }
 
 async function emitForkMarker<TBranches extends BranchRecord>(
 	fork: Fork<TBranches>,
-	policy: JoinPolicy
+	policy: JoinPolicy,
+	abortOnFailure: AbortOnFailure
 ): Promise<void> {
 	const state = (fork as InternalFork<TBranches>)[forkState];
 
@@ -344,6 +471,7 @@ async function emitForkMarker<TBranches extends BranchRecord>(
 		name: state.name,
 		branches: Array.from(state.branches.keys()),
 		policy,
+		abortOnFailure,
 	};
 
 	await state.rootStep.do(markerName, async () => marker);
@@ -352,6 +480,7 @@ async function emitForkMarker<TBranches extends BranchRecord>(
 async function emitJoinMarker<TBranches extends BranchRecord>(
 	fork: Fork<TBranches>,
 	policy: JoinPolicy,
+	abortOnFailure: AbortOnFailure,
 	outcomes: Record<string, WorkflowOutcome<unknown>>
 ): Promise<void> {
 	const state = (fork as InternalFork<TBranches>)[forkState];
@@ -378,7 +507,8 @@ async function emitJoinMarker<TBranches extends BranchRecord>(
 		type: "join",
 		name: state.name,
 		policy,
-		status: Object.values(branches).some((status) => status === "failure")
+		abortOnFailure,
+		status: Object.values(branches).some((status) => status !== "success")
 			? "failure"
 			: "success",
 		branches,
