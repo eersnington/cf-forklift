@@ -70,12 +70,19 @@ describe("cf-forklift integration", () => {
 	it("drains required join branches before failing", async () => {
 		const run = await waitForWorkflow(
 			{ scenario: "required-failure-drains" },
-			"errored"
+			"complete"
 		);
 
 		try {
-			const error = await run.introspector.getError();
-			expect(error.message).toContain("Fork \"verify merchant\" failed");
+			await expect(run.introspector.getOutput()).resolves.toEqual({
+				status: "failed",
+				message: expect.stringContaining('Fork "verify merchant" failed'),
+				outcomes: {
+					profile: "success",
+					bank: "failure",
+					risk: "success",
+				},
+			});
 			await expect(
 				run.introspector.waitForStepResult({ name: "verify merchant / join" })
 			).resolves.toEqual({
@@ -103,12 +110,18 @@ describe("cf-forklift integration", () => {
 	it("cooperatively aborts future branch work when requested", async () => {
 		const run = await waitForWorkflow(
 			{ scenario: "required-cooperative-abort" },
-			"errored"
+			"complete"
 		);
 
 		try {
-			const error = await run.introspector.getError();
-			expect(error.message).toContain("Fork \"verify merchant\" failed");
+			await expect(run.introspector.getOutput()).resolves.toEqual({
+				status: "failed",
+				message: expect.stringContaining('Fork "verify merchant" failed'),
+				outcomes: {
+					bank: "failure",
+					risk: "aborted",
+				},
+			});
 			await expect(
 				run.introspector.waitForStepResult({ name: "verify merchant / fork" })
 			).resolves.toEqual({
