@@ -60,9 +60,7 @@ export class MerchantWorkflow extends WorkflowEntrypoint<
 				),
 		});
 
-		const enrichment = await workflow.join.quorum(enrichMerchant, {
-			minimumSuccesses: 1,
-		});
+		const enrichment = await workflow.join.settled(enrichMerchant);
 
 		return {
 			merchantId,
@@ -111,7 +109,6 @@ Join
 ```ts
 await workflow.join.required(fork);
 await workflow.join.settled(fork);
-await workflow.join.quorum(fork, { minimumSuccesses: 2 });
 ```
 
 ## Native Rollbacks
@@ -169,7 +166,6 @@ Cloudflare still records primitive Workflow steps. cf-forklift adds structured n
 - Forks do not start branches until joined.
 - required waits for all branches before throwing by default.
 - settled returns keyed success/failure outcomes.
-- quorum waits for all branches, then checks minimumSuccesses.
 - waitForEvent remains Cloudflare's native step.waitForEvent; timeout-as-value helpers are not part of v1.
 - Branch names and step names should be deterministic.
 - firstCompleted / race semantics are intentionally not part of the initial API.

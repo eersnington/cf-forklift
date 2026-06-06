@@ -121,10 +121,6 @@ export type Workflow = {
 		settled<TBranches extends BranchRecord>(
 			fork: Fork<TBranches>
 		): Promise<SettledJoinResult<TBranches>>;
-		quorum<TBranches extends BranchRecord>(
-			fork: Fork<TBranches>,
-			options: { readonly minimumSuccesses: number }
-		): Promise<Partial<RequiredJoinResult<TBranches>>>;
 	};
 };
 
@@ -151,29 +147,6 @@ export class ForkJoinError extends Error {
 	}
 }
 
-export class ForkJoinQuorumError extends Error {
-	readonly forkName: string;
-	readonly minimumSuccesses: number;
-	readonly successCount: number;
-	readonly outcomes: Record<string, WorkflowOutcome<unknown>>;
-
-	constructor(options: {
-		readonly forkName: string;
-		readonly minimumSuccesses: number;
-		readonly successCount: number;
-		readonly outcomes: Record<string, WorkflowOutcome<unknown>>;
-	}) {
-		super(
-			`Fork "${options.forkName}" reached ${options.successCount} successful branch(es), but ${options.minimumSuccesses} were required. Completed branches were drained; inspect outcomes before retrying or compensating.`
-		);
-		this.name = "ForkJoinQuorumError";
-		this.forkName = options.forkName;
-		this.minimumSuccesses = options.minimumSuccesses;
-		this.successCount = options.successCount;
-		this.outcomes = options.outcomes;
-	}
-}
-
 export function withWorkflow(
 	step: WorkflowStep,
 	options: WorkflowOptions = {}
@@ -192,7 +165,6 @@ export function withWorkflow(
 		join: {
 			required: (fork, options) => joinRequired(fork, options),
 			settled: (fork) => joinSettled(fork),
-			quorum: (fork, options) => joinQuorum(fork, options),
 		},
 	};
 }
@@ -289,34 +261,6 @@ async function joinSettled<TBranches extends BranchRecord>(
 	await emitMarker(fork, "join");
 
 	return Object.fromEntries(entries) as SettledJoinResult<TBranches>;
-}
-
-async function joinQuorum<TBranches extends BranchRecord>(
-	fork: Fork<TBranches>,
-	options: { readonly minimumSuccesses: number }
-): Promise<Partial<RequiredJoinResult<TBranches>>> {
-	if (options.minimumSuccesses < 1) {
-		throw new Error(
-			`Fork "${fork.name}" quorum requires minimumSuccesses to be at least 1. Received ${options.minimumSuccesses}.`
-		);
-	}
-
-	const outcomes = await joinSettled(fork);
-	const values = successfulValues(outcomes) as Partial<
-		RequiredJoinResult<TBranches>
-	>;
-	const successCount = Object.keys(values).length;
-
-	if (successCount < options.minimumSuccesses) {
-		throw new ForkJoinQuorumError({
-			forkName: fork.name,
-			minimumSuccesses: options.minimumSuccesses,
-			successCount,
-			outcomes: outcomes as Record<string, WorkflowOutcome<unknown>>,
-		});
-	}
-
-	return values;
 }
 
 async function runBranches<TBranches extends BranchRecord>(
