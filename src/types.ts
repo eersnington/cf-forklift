@@ -9,29 +9,7 @@ import type {
 export const forkState = Symbol("cf-forklift.forkState");
 
 /** Serializable value shape accepted by Cloudflare Workflow step output. */
-export type Serializable<T> = T extends
-	| undefined
-	| null
-	| boolean
-	| number
-	| bigint
-	| string
-	| ReadableStream
-	| Blob
-	? T
-	: T extends Array<infer U>
-		? Array<Serializable<U>>
-		: T extends Map<infer K, infer V>
-			? Map<Serializable<K>, Serializable<V>>
-			: T extends Set<infer V>
-				? Set<Serializable<V>>
-				: T extends object
-					? {
-							[K in keyof T as K extends string | number
-								? K
-								: never]: Serializable<T[K]>;
-						}
-					: never;
+export type Serializable<T extends Rpc.Serializable<T>> = T;
 
 export type MarkerMode = "off" | "minimal" | "summary";
 
@@ -202,11 +180,11 @@ export interface ScopedWorkflowStep {
 	 * profile: ({ step }) => step.do("verify profile", verifyProfile)
 	 * ```
 	 */
-	do<T>(
+	do<T extends Rpc.Serializable<T>>(
 		name: string,
 		callback: (ctx: WorkflowStepContext) => Promise<T>,
 		rollbackOptions?: WorkflowStepRollbackOptions<T>
-	): Promise<Serializable<T>>;
+	): Promise<T>;
 
 	/**
 	 * Runs a configured Cloudflare Workflow step with the current fork and branch
@@ -218,12 +196,12 @@ export interface ScopedWorkflowStep {
 	 * 	step.do("verify bank", { retries: { limit: 3 } }, verifyBank)
 	 * ```
 	 */
-	do<T>(
+	do<T extends Rpc.Serializable<T>>(
 		name: string,
 		config: WorkflowStepConfig,
 		callback: (ctx: WorkflowStepContext) => Promise<T>,
 		rollbackOptions?: WorkflowStepRollbackOptions<T>
-	): Promise<Serializable<T>>;
+	): Promise<T>;
 
 	/** Runs a branch-scoped Cloudflare `step.sleep()`. */
 	sleep: WorkflowStep["sleep"];

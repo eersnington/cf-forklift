@@ -21,7 +21,6 @@ import {
 	type RequiredJoinResult,
 	type RequiredWorkflowOptions,
 	type ScopedWorkflowStep,
-	type Serializable,
 	type SettledJoinResult,
 	type Workflow,
 	type WorkflowOptions,
@@ -113,6 +112,20 @@ function createFork(
 	return fork;
 }
 
+function getForkState<TBranches extends BranchRecord>(
+	fork: Fork<TBranches>
+): ForkState {
+	const state = (fork as { readonly [forkState]?: ForkState })[forkState];
+
+	if (state === undefined) {
+		throw new Error(
+			"Cannot join fork: fork was not created by withWorkflow(). Create forks with workflow.fork(...) before passing them to workflow.join.required() or workflow.join.settled()."
+		);
+	}
+
+	return state;
+}
+
 async function joinRequired<TBranches extends BranchRecord>(
 	fork: Fork<TBranches>,
 	options: RequiredJoinOptions = {}
@@ -146,8 +159,7 @@ async function runBranchesSettled<TBranches extends BranchRecord>(
 	fork: Fork<TBranches>,
 	abortOnFailure: AbortOnFailure
 ): Promise<SettledJoinResult<TBranches>> {
-	const internalFork = fork as InternalFork<TBranches>;
-	const state = internalFork[forkState];
+	const state = getForkState(fork);
 	const run: ForkRun = {
 		forkName: fork.name,
 		abortOnFailure,
@@ -198,45 +210,50 @@ function scopedStep(
 	const prefix = (name: string) =>
 		`${state.name}${state.options.stepNameSeparator}${branchName}${state.options.stepNameSeparator}${name}`;
 
-	function doStep<T>(
+	type DoStepArgs<T extends Rpc.Serializable<T>> =
+		| [
+				callback: (ctx: WorkflowStepContext) => Promise<T>,
+				rollbackOptions?: WorkflowStepRollbackOptions<T>,
+			]
+		| [
+				config: WorkflowStepConfig,
+				callback: (ctx: WorkflowStepContext) => Promise<T>,
+				rollbackOptions?: WorkflowStepRollbackOptions<T>,
+			];
+
+	function isCallbackArgs<T extends Rpc.Serializable<T>>(
+		args: DoStepArgs<T>
+	): args is [
+		callback: (ctx: WorkflowStepContext) => Promise<T>,
+		rollbackOptions?: WorkflowStepRollbackOptions<T>,
+	] {
+		return typeof args[0] === "function";
+	}
+
+	function doStep<T extends Rpc.Serializable<T>>(
 		name: string,
 		callback: (ctx: WorkflowStepContext) => Promise<T>,
 		rollbackOptions?: WorkflowStepRollbackOptions<T>
-	): Promise<Serializable<T>>;
-	function doStep<T>(
+	): Promise<T>;
+	function doStep<T extends Rpc.Serializable<T>>(
 		name: string,
 		config: WorkflowStepConfig,
 		callback: (ctx: WorkflowStepContext) => Promise<T>,
 		rollbackOptions?: WorkflowStepRollbackOptions<T>
-	): Promise<Serializable<T>>;
-	function doStep<T>(
+	): Promise<T>;
+	function doStep<T extends Rpc.Serializable<T>>(
 		name: string,
-		configOrCallback:
-			| WorkflowStepConfig
-			| ((ctx: WorkflowStepContext) => Promise<T>),
-		callbackOrRollback?:
-			| ((ctx: WorkflowStepContext) => Promise<T>)
-			| WorkflowStepRollbackOptions<T>,
-		rollbackOptions?: WorkflowStepRollbackOptions<T>
-	): Promise<Serializable<T>> {
+		...args: DoStepArgs<T>
+	): Promise<T> {
 		cancellation.throwIfRequested();
 
-		return (typeof configOrCallback === "function"
-			? state.rootStep.do(
-					prefix(name),
-					configOrCallback as (
-						ctx: WorkflowStepContext
-					) => Promise<Rpc.Serializable<T>>,
-					callbackOrRollback as WorkflowStepRollbackOptions<Rpc.Serializable<T>>
-				)
-			: state.rootStep.do(
-					prefix(name),
-					configOrCallback,
-					callbackOrRollback as (
-						ctx: WorkflowStepContext
-					) => Promise<Rpc.Serializable<T>>,
-					rollbackOptions as WorkflowStepRollbackOptions<Rpc.Serializable<T>>
-				)) as Promise<Serializable<T>>;
+		const scopedName = prefix(name);
+
+		if (isCallbackArgs(args)) {
+			return state.rootStep.do(scopedName, ...args);
+		}
+
+		return state.rootStep.do(scopedName, ...args);
 	}
 
 	return {
@@ -300,7 +317,7 @@ async function emitForkMarker<TBranches extends BranchRecord>(
 	policy: JoinPolicy,
 	abortOnFailure: AbortOnFailure
 ): Promise<void> {
-	const state = (fork as InternalFork<TBranches>)[forkState];
+	const state = getForkState(fork);
 
 	if (state.options.markers === "off") {
 		return;
@@ -330,7 +347,7 @@ async function emitJoinMarker<TBranches extends BranchRecord>(
 	abortOnFailure: AbortOnFailure,
 	outcomes: Record<string, WorkflowOutcome<unknown>>
 ): Promise<void> {
-	const state = (fork as InternalFork<TBranches>)[forkState];
+	const state = getForkState(fork);
 
 	if (state.options.markers === "off") {
 		return;
