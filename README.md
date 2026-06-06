@@ -103,16 +103,25 @@ verify merchant / bank / verify bank
 
 Branch names must be unique within a fork.
 
-Dynamic forks:
+Dynamic forks with runtime branch names can opt into a homogeneous result type:
 ```ts
-const fork = workflow.fork("run checks");
+type CheckResult = {
+	ok: boolean;
+};
+
+const fork = workflow.fork<CheckResult>("run checks");
 
 for (const check of checks) {
 	fork.branch(check.name, ({ step }) =>
 		step.do(check.stepName, () => runCheck(check))
 	);
 }
+
+const outcomes = await workflow.join.settled(fork);
+const outcome = outcomes[check.name];
 ```
+
+Static branch records preserve exact result keys. Runtime string branch names return partial keyed records, so `outcomes.bank` is not guaranteed to exist unless `bank` was a static branch key.
 
 ### Join
 

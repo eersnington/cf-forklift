@@ -251,13 +251,36 @@ export type BranchFactory<TResult> = (
 
 export type BranchRecord = Record<string, BranchFactory<unknown>>;
 
-export type RequiredJoinResult<TBranches extends BranchRecord> = {
-	[K in keyof TBranches]: Awaited<ReturnType<TBranches[K]>>;
-};
+type BranchResult<TBranch extends BranchFactory<unknown>> = Awaited<
+	ReturnType<TBranch>
+>;
 
-export type SettledJoinResult<TBranches extends BranchRecord> = {
-	[K in keyof TBranches]: WorkflowOutcome<Awaited<ReturnType<TBranches[K]>>>;
-};
+export type RequiredJoinResult<TBranches extends BranchRecord> =
+	string extends keyof TBranches
+		? Partial<Record<string, BranchResult<TBranches[string]>>>
+		: {
+				[K in keyof TBranches]: BranchResult<TBranches[K]>;
+			};
+
+export type SettledJoinResult<TBranches extends BranchRecord> =
+	string extends keyof TBranches
+		? Partial<
+				Record<string, WorkflowOutcome<BranchResult<TBranches[string]>>>
+			>
+		: {
+				[K in keyof TBranches]: WorkflowOutcome<BranchResult<TBranches[K]>>;
+			};
+
+type BranchResultFor<TBranches extends BranchRecord, TResult> =
+	string extends keyof TBranches ? BranchResult<TBranches[string]> : TResult;
+
+type BranchesAfterBranch<
+	TBranches extends BranchRecord,
+	TName extends string,
+	TResult,
+> = string extends keyof TBranches
+	? TBranches
+	: TBranches & Record<TName, BranchFactory<TResult>>;
 
 /** @internal Join policy used when emitting markers and running branch work. */
 export type JoinPolicy = "required" | "settled";
@@ -355,7 +378,7 @@ export interface Fork<TBranches extends BranchRecord> {
 	/**
 	 * Adds a branch to this fork and returns the same fork with widened branch
 	 * result types.
- 	 *
+	 *
 	 * The branch name must be unique within the fork. Branch names become keys in
 	 * required-join results, settled-join outcomes, and marker output.
 	 *
@@ -365,11 +388,11 @@ export interface Fork<TBranches extends BranchRecord> {
 	 * 	.branch("bank", ({ step }) => step.do("verify bank", verifyBank))
 	 * 	.branch("risk", ({ step }) => step.do("screen risk", screenRisk));
 	 * ```
- 	 */
+	 */
 	branch<TName extends string, TResult>(
 		name: TName,
-		factory: BranchFactory<TResult>
-	): Fork<TBranches & Record<TName, BranchFactory<TResult>>>;
+		factory: BranchFactory<BranchResultFor<TBranches, TResult>>
+	): Fork<BranchesAfterBranch<TBranches, TName, TResult>>;
 }
 
 /** @internal Fork object plus hidden implementation state. */
@@ -451,6 +474,26 @@ export interface Workflow {
 	 * ```
 	 */
 	fork(name: string): Fork<Record<never, never>>;
+
+	/**
+	 * Creates an empty fork whose runtime branch names share one result type.
+	 *
+	 * Use this form when branch names come from runtime data and every branch
+	 * returns the same value shape. Join results are partial records because an
+	 * arbitrary string key is not guaranteed to exist.
+	 *
+	 * @example
+	 * ```ts
+	 * const checks = workflow.fork<CheckResult>("run checks");
+	 *
+	 * for (const check of enabledChecks) {
+	 * 	checks.branch(check.name, ({ step }) =>
+	 * 		step.do(check.stepName, () => runCheck(check))
+	 * 	);
+	 * }
+	 * ```
+	 */
+	fork<TResult>(name: string): Fork<Record<string, BranchFactory<TResult>>>;
 
 	/**
 	 * Join operations that start fork branches and collect their outcomes.

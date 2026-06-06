@@ -8,6 +8,7 @@ import { ForkAbortError, ForkJoinError } from "./errors";
 import {
 	forkState,
 	type AbortOnFailure,
+	type BranchFactory,
 	type BranchRecord,
 	type Fork,
 	type ForkCancellation,
@@ -58,10 +59,20 @@ export function withWorkflow(
 		markers: options.markers ?? "summary",
 	} satisfies RequiredWorkflowOptions;
 
+	function fork<TBranches extends BranchRecord>(
+		name: string,
+		branches: TBranches
+	): Fork<TBranches>;
+	function fork(name: string): Fork<Record<never, never>>;
+	function fork<TResult>(
+		name: string
+	): Fork<Record<string, BranchFactory<TResult>>>;
+	function fork(name: string, branches?: BranchRecord): Fork<BranchRecord> {
+		return createFork(step, name, resolvedOptions, branches);
+	}
+
 	return {
-		fork<TBranches extends BranchRecord>(name: string, branches?: TBranches) {
-			return createFork(step, name, resolvedOptions, branches);
-		},
+		fork,
 		join: {
 			required: (fork, options) => joinRequired(fork, options),
 			settled: (fork) => joinSettled(fork),
@@ -133,7 +144,12 @@ async function joinRequired<TBranches extends BranchRecord>(
 	const abortOnFailure = options.abortOnFailure ?? "none";
 	await emitForkMarker(fork, "required", abortOnFailure);
 	const outcomes = await runBranchesSettled(fork, abortOnFailure);
-	await emitJoinMarker(fork, "required", abortOnFailure, outcomes);
+	await emitJoinMarker(
+		fork,
+		"required",
+		abortOnFailure,
+		outcomes as Record<string, WorkflowOutcome<unknown>>
+	);
 
 	if (Object.values(outcomes).some((outcome) => outcome.status !== "success")) {
 		throw new ForkJoinError({
@@ -150,7 +166,12 @@ async function joinSettled<TBranches extends BranchRecord>(
 ): Promise<SettledJoinResult<TBranches>> {
 	await emitForkMarker(fork, "settled", "none");
 	const outcomes = await runBranchesSettled(fork, "none");
-	await emitJoinMarker(fork, "settled", "none", outcomes);
+	await emitJoinMarker(
+		fork,
+		"settled",
+		"none",
+		outcomes as Record<string, WorkflowOutcome<unknown>>
+	);
 
 	return outcomes;
 }
