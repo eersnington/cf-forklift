@@ -1,0 +1,12 @@
+name = "cf-forklift-test"
+main = "tests/helpers/test-workflow.ts"
+compatibility_date = "2026-06-06"
+
+[[kv_namespaces]]
+binding = "CALL_LOG"
+id = "cf-forklift-test-call-log"
+
+[[workflows]]
+name = "cf-forklift-test-workflow"
+binding = "TEST_WORKFLOW"
+class_name = "TestWorkflow"
