@@ -3,12 +3,12 @@ import {
 	type WorkflowEvent,
 	type WorkflowStep,
 } from "cloudflare:workers";
-import { ForkJoinError, withWorkflow } from "../../src/index.ts";
+import { withWorkflow } from "../../src/index.ts";
 
 export type TestScenario =
 	| "required-success"
 	| "required-failure-drains"
-	| "summary-markers-default"
+	| "required-cooperative-abort"
 	| "minimal-markers";
 
 export type TestParams = {
@@ -34,12 +34,12 @@ export class TestWorkflow extends WorkflowEntrypoint<TestEnv, TestParams> {
 				return this.requiredSuccess(event.payload.testId, step);
 			case "required-failure-drains":
 				return this.requiredFailureDrains(event.payload.testId, step);
-			case "summary-markers-default":
-				return this.summaryMarkersDefault(event.payload.testId, step);
+			case "required-cooperative-abort":
+				return this.requiredCooperativeAbort(event.payload.testId, step);
 			case "minimal-markers":
 				return this.minimalMarkers(event.payload.testId, step);
 		}
- 
+
 		event.payload.scenario satisfies never;
 	}
 
@@ -85,39 +85,34 @@ export class TestWorkflow extends WorkflowEntrypoint<TestEnv, TestParams> {
 				}),
 		});
 
-		try {
-			await workflow.join.required(fork);
-			throw new Error("required join should have failed");
-		} catch (error) {
-			if (error instanceof ForkJoinError) {
-				await this.log(testId, "fork join error", {
-					status: error.outcomes.bank?.status,
-				});
-				throw error;
-			}
-
-			throw error;
-		}
+		await workflow.join.required(fork);
 	}
 
-	private async summaryMarkersDefault(testId: string, step: WorkflowStep) {
+	private async requiredCooperativeAbort(testId: string, step: WorkflowStep) {
 		const workflow = withWorkflow(step);
 		const fork = workflow.fork("verify merchant", {
-			profile: ({ step }) =>
-				step.do("verify profile", async () => {
-					await this.log(testId, "verify merchant / verify profile");
-					return "profile-ok";
-				}),
 			bank: ({ step }) =>
-				step.do("verify bank", async () => {
-					await this.log(testId, "verify merchant / verify bank");
-					return "bank-ok";
-				}),
+				step.do(
+					"verify bank",
+					{ retries: { limit: 0, delay: "1 second" } },
+					async () => {
+						await this.log(testId, "verify merchant / verify bank");
+						throw new Error("bank failed");
+					}
+				),
+			risk: async ({ step, cancellation }) => {
+				await step.sleep("wait before risk followup", "1 second");
+
+				cancellation.throwIfRequested();
+
+				return step.do("risk followup", async () => {
+					await this.log(testId, "verify merchant / risk followup");
+					return "risk-ok";
+				});
+			},
 		});
 
-		await workflow.join.required(fork);
-
-		return { ok: true };
+		await workflow.join.required(fork, { abortOnFailure: "cooperative" });
 	}
 
 	private async minimalMarkers(testId: string, step: WorkflowStep) {
