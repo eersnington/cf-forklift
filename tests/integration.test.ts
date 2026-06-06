@@ -1,17 +1,10 @@
 import {
-	env,
 	introspectWorkflowInstance,
 	type WorkflowInstanceIntrospector,
 } from "cloudflare:test";
+import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import type { TestParams } from "./helpers/test-workflow";
-
-type TestEnv = {
-	CALL_LOG: KVNamespace;
-	TEST_WORKFLOW: Workflow<TestParams>;
-};
-
-const testEnv = env as unknown as TestEnv;
 
 type WorkflowRun = {
 	testId: string;
@@ -25,11 +18,11 @@ async function waitForWorkflow(
 ): Promise<WorkflowRun> {
 	const testId = `test-${crypto.randomUUID()}`;
 	const introspector = await introspectWorkflowInstance(
-		testEnv.TEST_WORKFLOW,
+		env.TEST_WORKFLOW,
 		testId
 	);
 
-	await testEnv.TEST_WORKFLOW.create({
+	await env.TEST_WORKFLOW.create({
 		id: testId,
 		params: { ...params, testId },
 	});
@@ -44,7 +37,7 @@ async function waitForWorkflow(
 }
 
 async function getStepNames(testId: string): Promise<string[]> {
-	const list = await testEnv.CALL_LOG.list({ prefix: `${testId}:` });
+	const list = await env.CALL_LOG.list({ prefix: `${testId}:` });
 
 	return list.keys.map((key) => key.name.split(":").slice(2).join(":"));
 }
