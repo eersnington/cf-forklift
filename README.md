@@ -1,7 +1,7 @@
 
 # cf-forklift
 
-Structured fork/join parallelism helpers for Cloudflare Workflows.
+Netflix Conductor-style structured fork/join parallelism helpers for [Cloudflare Workflows](https://developers.cloudflare.com/workflows/).
 
 ## Installation
 
@@ -105,10 +105,13 @@ for (const check of checks) {
 Join
 ```ts
 await workflow.join.required(fork);
+await workflow.join.required(fork, { abortOnFailure: "cooperative" });
 await workflow.join.settled(fork);
 ```
 
-## Native Rollbacks
+`required` returns keyed values when every branch succeeds. `settled` returns keyed branch outcomes without throwing for branch failures.
+
+## Supports Native Rollbacks
 
 ```ts
 const provision = workflow.fork("provision resources", {
@@ -134,6 +137,51 @@ const provision = workflow.fork("provision resources", {
 
 await workflow.join.required(provision);
 ```
+
+Register native Cloudflare rollback handlers on branch `step.do` calls that complete side effects. Rollbacks compensate completed work if the Workflow later fails. Cooperative abort does not undo completed work.
+
+## Cooperative Abort
+
+Required joins drain by default. If you want sibling branches to skip future work after one branch fails, opt into cooperative abort:
+
+```ts
+const verifyMerchant = workflow.fork("verify merchant", {
+	bank: ({ step }) =>
+		step.do("verify bank", async () => {
+			throw new Error("bank failed");
+		}),
+
+	risk: async ({ step, cancellation }) => {
+		cancellation.throwIfRequested();
+
+		await step.do("risk check 1", async () => "ok");
+
+		cancellation.throwIfRequested();
+
+		return step.do(
+			"risk check 2",
+			async () => createRiskDecision(),
+			{
+				// Register rollback for side effects that may have completed before the fork fails.
+				rollback: async ({ output }) => deleteRiskDecision(output),
+			}
+		);
+	},
+});
+
+await workflow.join.required(verifyMerchant, {
+	abortOnFailure: "cooperative",
+});
+```
+
+Cooperative abort is a branch checkpoint mechanism. It is useful when later branch work should be skipped after another branch has already failed.
+
+It does not change Cloudflare runtime behavior:
+
+- Already-started `step.do`, `sleep`, `sleepUntil`, and `waitForEvent` calls still finish normally.
+- Branches only stop when they reach `cancellation.throwIfRequested()` or start a scoped Workflow primitive after abort was requested.
+- The required join still waits for every branch to settle before throwing `ForkJoinError`.
+- Use native rollback handlers for side effects that may complete before the fork fails.
 
 ## How It Works
 
@@ -164,6 +212,7 @@ The fork marker returns:
 	name: "verify merchant",
 	branches: ["profile", "bank"],
 	policy: "required",
+	abortOnFailure: "none",
 }
 ```
 
@@ -174,6 +223,7 @@ The join marker returns:
 	type: "join",
 	name: "verify merchant",
 	policy: "required",
+	abortOnFailure: "none",
 	status: "success",
 	branches: {
 		profile: "success",
@@ -186,15 +236,14 @@ Use `markers: "minimal"` for breadcrumb-only marker steps, or `markers: "off"` t
 
 Cloudflare still records primitive Workflow steps. cf-forklift adds structured naming, keyed outputs, and join policies in userland.
 
-## Important Notes
+## Behavior Guarantees
 
-- Forks do not start branches until joined.
-- required waits for all branches before throwing.
-- settled returns keyed success/failure outcomes.
-- Summary markers are enabled by default; use minimal/off to reduce marker steps.
-- waitForEvent remains Cloudflare's native step.waitForEvent; timeout-as-value helpers are not part of v1.
-- Branch names and step names should be deterministic.
-- firstCompleted / race / fail-fast semantics are intentionally not part of the initial API. Cloudflare Workflows do not expose userland interruption for branch steps, so fail-fast would only stop waiting locally; it would not cancel already-started Workflow work.
+- Forks are lazy; branches do not start until a join method is called.
+- `join.required(fork)` starts every branch, waits for every branch to settle, and throws `ForkJoinError` if any branch does not succeed.
+- `join.required(fork, { abortOnFailure: "cooperative" })` requests cooperative abort after the first branch failure and still drains all branches.
+- `join.settled(fork)` returns keyed `success`, `failure`, or `aborted` outcomes.
+- Marker steps are enabled by default with `markers: "summary"`; use `"minimal"` or `"off"` to reduce Workflow history entries.
+- Branch names and step names should be deterministic because they become output keys and Cloudflare step names.
 
 ## License
 
