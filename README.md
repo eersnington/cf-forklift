@@ -83,13 +83,25 @@ type Options = {
 };
 ```
 
-Fork
+### Fork
+
+Forks describe named branch work. They are lazy: branch functions do not start until the fork is passed to a join method.
+
 ```ts
 const fork = workflow.fork("verify merchant", {
 	profile: ({ step }) => step.do("verify profile", verifyProfile),
 	bank: ({ step }) => step.do("verify bank", verifyBank),
 });
 ```
+
+Branch names become result keys and Cloudflare step-name path segments:
+
+```txt
+verify merchant / profile / verify profile
+verify merchant / bank / verify bank
+```
+
+Branch names must be unique within a fork.
 
 Dynamic forks:
 ```ts
@@ -102,14 +114,33 @@ for (const check of checks) {
 }
 ```
 
-Join
+### Join
+
+`required` is for all-or-nothing branch work. It starts every branch, waits for every branch to settle, and returns keyed values only if every branch succeeds.
+
 ```ts
-await workflow.join.required(fork);
-await workflow.join.required(fork, { abortOnFailure: "cooperative" });
-await workflow.join.settled(fork);
+const verification = await workflow.join.required(fork);
 ```
 
-`required` returns keyed values when every branch succeeds. `settled` returns keyed branch outcomes without throwing for branch failures.
+If any branch fails or aborts, `required` throws `ForkJoinError` after draining all branch outcomes.
+
+Use cooperative abort when later sibling work should stop at checkpoints after the first branch failure:
+
+```ts
+await workflow.join.required(fork, {
+	abortOnFailure: "cooperative",
+});
+```
+
+`settled` is for best-effort branch work. It starts every branch, waits for every branch to settle, and returns keyed outcomes without throwing for branch failures.
+
+```ts
+const outcomes = await workflow.join.settled(fork);
+
+if (outcomes.website.status === "failure") {
+	// Continue with partial enrichment.
+}
+```
 
 ## Supports Native Rollbacks
 
