@@ -36,20 +36,17 @@ export class TestWorkflow extends WorkflowEntrypoint<TestEnv, TestParams> {
 	): Promise<unknown> {
 		this.callCounter = 0;
 
-		switch (event.payload.scenario) {
-			case "required-success":
-				return this.requiredSuccess(event.payload.testId, step);
-			case "required-failure-drains":
-				return this.requiredFailureDrains(event.payload.testId, step);
-			case "required-cooperative-abort":
-				return this.requiredCooperativeAbort(event.payload.testId, step);
-			case "duplicate-branch-name":
-				return this.duplicateBranchName(step);
-			case "minimal-markers":
-				return this.minimalMarkers(event.payload.testId, step);
-		}
+		const scenarios = {
+			"required-success": () => this.requiredSuccess(event.payload.testId, step),
+			"required-failure-drains": () =>
+				this.requiredFailureDrains(event.payload.testId, step),
+			"required-cooperative-abort": () =>
+				this.requiredCooperativeAbort(event.payload.testId, step),
+			"duplicate-branch-name": () => this.duplicateBranchName(step),
+			"minimal-markers": () => this.minimalMarkers(event.payload.testId, step),
+		} satisfies Record<TestScenario, () => unknown | Promise<unknown>>;
 
-		event.payload.scenario satisfies never;
+		return scenarios[event.payload.scenario]();
 	}
 
 	private async requiredSuccess(testId: string, step: WorkflowStep) {
