@@ -9,6 +9,7 @@ export type TestScenario =
 	| "required-success"
 	| "required-failure-drains"
 	| "required-cooperative-abort"
+	| "duplicate-branch-name"
 	| "minimal-markers";
 
 export type TestParams = {
@@ -42,6 +43,8 @@ export class TestWorkflow extends WorkflowEntrypoint<TestEnv, TestParams> {
 				return this.requiredFailureDrains(event.payload.testId, step);
 			case "required-cooperative-abort":
 				return this.requiredCooperativeAbort(event.payload.testId, step);
+			case "duplicate-branch-name":
+				return this.duplicateBranchName(step);
 			case "minimal-markers":
 				return this.minimalMarkers(event.payload.testId, step);
 		}
@@ -54,12 +57,12 @@ export class TestWorkflow extends WorkflowEntrypoint<TestEnv, TestParams> {
 		const fork = workflow.fork("verify merchant", {
 			profile: ({ step }) =>
 				step.do("verify profile", async () => {
-					await this.log(testId, "verify merchant / verify profile");
+					await this.log(testId, "verify merchant / profile / verify profile");
 					return "profile-ok";
 				}),
 			bank: ({ step }) =>
 				step.do("verify bank", async () => {
-					await this.log(testId, "verify merchant / verify bank");
+					await this.log(testId, "verify merchant / bank / verify bank");
 					return "bank-ok";
 				}),
 		});
@@ -72,12 +75,12 @@ export class TestWorkflow extends WorkflowEntrypoint<TestEnv, TestParams> {
 		const fork = workflow.fork("verify merchant", {
 			profile: ({ step }) =>
 				step.do("verify profile", async () => {
-					await this.log(testId, "verify merchant / verify profile");
+					await this.log(testId, "verify merchant / profile / verify profile");
 					return "profile-ok";
 				}),
 			bank: async ({ step }) => {
 				await step.do("verify bank", async () => {
-					await this.log(testId, "verify merchant / verify bank");
+					await this.log(testId, "verify merchant / bank / verify bank");
 					return "bank-ok";
 				});
 
@@ -85,7 +88,7 @@ export class TestWorkflow extends WorkflowEntrypoint<TestEnv, TestParams> {
 			},
 			risk: ({ step }) =>
 				step.do("screen risk", async () => {
-					await this.log(testId, "verify merchant / screen risk");
+					await this.log(testId, "verify merchant / risk / screen risk");
 					return "risk-ok";
 				}),
 		});
@@ -106,7 +109,7 @@ export class TestWorkflow extends WorkflowEntrypoint<TestEnv, TestParams> {
 		const fork = workflow.fork("verify merchant", {
 			bank: async ({ step }) => {
 				await step.do("verify bank", async () => {
-					await this.log(testId, "verify merchant / verify bank");
+					await this.log(testId, "verify merchant / bank / verify bank");
 					return "bank-ok";
 				});
 
@@ -118,7 +121,7 @@ export class TestWorkflow extends WorkflowEntrypoint<TestEnv, TestParams> {
 				cancellation.throwIfRequested();
 
 				return step.do("risk followup", async () => {
-					await this.log(testId, "verify merchant / risk followup");
+					await this.log(testId, "verify merchant / risk / risk followup");
 					return "risk-ok";
 				});
 			},
@@ -137,12 +140,33 @@ export class TestWorkflow extends WorkflowEntrypoint<TestEnv, TestParams> {
 		}
 	}
 
+	private duplicateBranchName(step: WorkflowStep) {
+		const workflow = withWorkflow(step);
+		const fork = workflow.fork("verify merchant");
+
+		try {
+			fork.branch("bank", ({ step }) =>
+				step.do("verify bank", async () => "bank-ok")
+			);
+			fork.branch("bank", ({ step }) =>
+				step.do("verify bank again", async () => "bank-ok")
+			);
+
+			return { status: "unexpected-success" };
+		} catch (error) {
+			return {
+				status: "failed",
+				message: error instanceof Error ? error.message : String(error),
+			};
+		}
+	}
+
 	private async minimalMarkers(testId: string, step: WorkflowStep) {
 		const workflow = withWorkflow(step, { markers: "minimal" });
 		const fork = workflow.fork("verify merchant", {
 			profile: ({ step }) =>
 				step.do("verify profile", async () => {
-					await this.log(testId, "verify merchant / verify profile");
+					await this.log(testId, "verify merchant / profile / verify profile");
 					return "profile-ok";
 				}),
 		});

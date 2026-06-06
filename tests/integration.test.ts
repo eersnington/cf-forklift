@@ -59,8 +59,8 @@ describe("cf-forklift integration", () => {
 				bank: "bank-ok",
 			});
 			await expect(getStepNames(run.testId)).resolves.toEqual(expect.arrayContaining([
-				"verify merchant / verify profile",
-				"verify merchant / verify bank",
+				"verify merchant / profile / verify profile",
+				"verify merchant / bank / verify bank",
 			]));
 		} finally {
 			await run.dispose();
@@ -76,7 +76,9 @@ describe("cf-forklift integration", () => {
 		try {
 			await expect(run.introspector.getOutput()).resolves.toEqual({
 				status: "failed",
-				message: expect.stringContaining('Fork "verify merchant" failed'),
+				message: expect.stringContaining(
+					'Fork "verify merchant" did not complete successfully'
+				),
 				outcomes: {
 					profile: "success",
 					bank: "failure",
@@ -98,9 +100,9 @@ describe("cf-forklift integration", () => {
 				},
 			});
 			await expect(getStepNames(run.testId)).resolves.toEqual(expect.arrayContaining([
-				"verify merchant / verify profile",
-				"verify merchant / verify bank",
-				"verify merchant / screen risk",
+				"verify merchant / profile / verify profile",
+				"verify merchant / bank / verify bank",
+				"verify merchant / risk / screen risk",
 			]));
 		} finally {
 			await run.dispose();
@@ -116,7 +118,9 @@ describe("cf-forklift integration", () => {
 		try {
 			await expect(run.introspector.getOutput()).resolves.toEqual({
 				status: "failed",
-				message: expect.stringContaining('Fork "verify merchant" failed'),
+				message: expect.stringContaining(
+					'Fork "verify merchant" did not complete successfully'
+				),
 				outcomes: {
 					bank: "failure",
 					risk: "aborted",
@@ -146,9 +150,27 @@ describe("cf-forklift integration", () => {
 			});
 			const stepNames = await getStepNames(run.testId);
 			expect(stepNames).toEqual(
-				expect.arrayContaining(["verify merchant / verify bank"])
+				expect.arrayContaining(["verify merchant / bank / verify bank"])
 			);
-			expect(stepNames).not.toContain("verify merchant / risk followup");
+			expect(stepNames).not.toContain("verify merchant / risk / risk followup");
+		} finally {
+			await run.dispose();
+		}
+	});
+
+	it("rejects duplicate dynamic branch names", async () => {
+		const run = await waitForWorkflow(
+			{ scenario: "duplicate-branch-name" },
+			"complete"
+		);
+
+		try {
+			await expect(run.introspector.getOutput()).resolves.toEqual({
+				status: "failed",
+				message: expect.stringContaining(
+					'Fork "verify merchant" already has a branch named "bank"'
+				),
+			});
 		} finally {
 			await run.dispose();
 		}
@@ -165,7 +187,7 @@ describe("cf-forklift integration", () => {
 				run.introspector.waitForStepResult({ name: "verify merchant / join" })
 			).resolves.toBeUndefined();
 			await expect(getStepNames(run.testId)).resolves.toEqual([
-				"verify merchant / verify profile",
+				"verify merchant / profile / verify profile",
 			]);
 		} finally {
 			await run.dispose();

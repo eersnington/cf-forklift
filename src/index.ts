@@ -178,11 +178,22 @@ export class ForkJoinError extends Error {
 		const failures = Object.entries(options.outcomes)
 			.filter(([, outcome]) => outcome.status === "failure")
 			.map(([name]) => name);
+		const aborted = Object.entries(options.outcomes)
+			.filter(([, outcome]) => outcome.status === "aborted")
+			.map(([name]) => name);
+		const details = [
+			failures.length > 0
+				? `Failed branches: ${failures.join(", ")}.`
+				: undefined,
+			aborted.length > 0
+				? `Aborted branches: ${aborted.join(", ")}.`
+				: undefined,
+		]
+			.filter((detail) => detail !== undefined)
+			.join(" ");
 
 		super(
-			`Fork "${options.forkName}" failed in ${failures.length} branch(es): ${failures.join(
-				", "
-			)}. Completed branches were drained; inspect outcomes before retrying or compensating.`
+			`Fork "${options.forkName}" did not complete successfully. ${details} Completed branches were drained; inspect outcomes before retrying or compensating.`
 		);
 		this.name = "ForkJoinError";
 		this.forkName = options.forkName;
@@ -252,6 +263,12 @@ function createFork(
 	const fork: InternalFork<BranchRecord> = {
 		name,
 		branch(branchName, factory) {
+			if (state.branches.has(branchName)) {
+				throw new Error(
+					`Fork "${state.name}" already has a branch named "${branchName}". Branch names become output keys and must be unique within a fork.`
+				);
+			}
+
 			state.branches.set(branchName, factory);
 			return fork as InternalFork<BranchRecord>;
 		},
@@ -312,7 +329,7 @@ async function runBranchesSettled<TBranches extends BranchRecord>(
 	const entries = await Promise.all(
 		Array.from(state.branches.entries()).map(async ([branchName, factory]) => {
 			const cancellation = createForkCancellation(run, branchName);
-			const step = scopedStep(state, cancellation);
+			const step = scopedStep(state, branchName, cancellation);
 
 			try {
 				const value = await factory({
@@ -346,10 +363,11 @@ async function runBranchesSettled<TBranches extends BranchRecord>(
 
 function scopedStep(
 	state: ForkState,
+	branchName: string,
 	cancellation: ForkCancellation
 ): ScopedWorkflowStep {
 	const prefix = (name: string) =>
-		`${state.name}${state.options.stepNameSeparator}${name}`;
+		`${state.name}${state.options.stepNameSeparator}${branchName}${state.options.stepNameSeparator}${name}`;
 
 	function doStep<T>(
 		name: string,

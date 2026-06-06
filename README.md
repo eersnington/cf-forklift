@@ -188,10 +188,12 @@ It does not change Cloudflare runtime behavior:
 cf-forklift wraps WorkflowStep and prefixes branch step names.
 
 ```
-verify merchant / verify profile
-verify merchant / verify bank
-verify merchant / screen risk
+verify merchant / profile / verify profile
+verify merchant / bank / verify bank
+verify merchant / risk / screen risk
 ```
+
+Branch names are part of the Cloudflare step name so different branches can safely use the same local step name.
 
 ## Markers
 
@@ -199,8 +201,8 @@ Summary markers are enabled by default. They add real Workflow steps around a fo
 
 ```
 verify merchant / fork
-verify merchant / verify profile
-verify merchant / verify bank
+verify merchant / profile / verify profile
+verify merchant / bank / verify bank
 verify merchant / join
 ```
 
@@ -243,7 +245,8 @@ Cloudflare still records primitive Workflow steps. cf-forklift adds structured n
 - `join.required(fork, { abortOnFailure: "cooperative" })` requests cooperative abort after the first branch failure and still drains all branches.
 - `join.settled(fork)` returns keyed `success`, `failure`, or `aborted` outcomes.
 - Marker steps are enabled by default with `markers: "summary"`; use `"minimal"` or `"off"` to reduce Workflow history entries.
-- Branch names and step names should be deterministic because they become output keys and Cloudflare step names.
+- Branch names must be unique within a fork because they become output keys.
+- Branch names and step names should be deterministic because they become Cloudflare step names.
 
 ## License
 
