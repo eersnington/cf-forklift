@@ -1,7 +1,8 @@
 {
   "name": "cf-forklift",
-  "version": "0.1.0",
   "description": "Structured parallelism for Cloudflare Workflows",
+  "version": "0.1.0",
+  "private": false,
   "type": "module",
   "main": "dist/index.cjs",
   "module": "dist/index.mjs",
@@ -46,6 +47,5 @@
     "@types/bun": "^1.3.13",
     "tsdown": "^0.22.1",
     "typescript": "^6.0.3"
-  },
-  "private": true
+  }
 }
