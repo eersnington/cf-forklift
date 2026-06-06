@@ -26,9 +26,7 @@ export class MerchantWorkflow extends WorkflowEntrypoint<
 	{ merchantId: string }
 > {
 	async run(event: WorkflowEvent<{ merchantId: string }>, step: WorkflowStep) {
-		const workflow = withWorkflow(step, {
-			markers: "minimal",
-		});
+		const workflow = withWorkflow(step);
 
 		const merchantId = event.payload.merchantId;
 
@@ -81,8 +79,7 @@ withWorkflow Options
 ```ts
 type Options = {
 	stepNameSeparator?: string;
-	markers?: "off" | "minimal";
-	defaultRequiredFailureMode?: "throwAfterDrain" | "failFast";
+	markers?: "off" | "minimal" | "summary";
 };
 ```
 
@@ -148,9 +145,9 @@ verify merchant / verify bank
 verify merchant / screen risk
 ```
 
-## Optional Markers
+## Markers
 
-Add real Workflow steps around a fork/join:
+Summary markers are enabled by default. They add real Workflow steps around a fork/join:
 
 ```
 verify merchant / fork
@@ -159,16 +156,45 @@ verify merchant / verify bank
 verify merchant / join
 ```
 
+The fork marker returns:
+
+```ts
+{
+	type: "fork",
+	name: "verify merchant",
+	branches: ["profile", "bank"],
+	policy: "required",
+}
+```
+
+The join marker returns:
+
+```ts
+{
+	type: "join",
+	name: "verify merchant",
+	policy: "required",
+	status: "success",
+	branches: {
+		profile: "success",
+		bank: "success",
+	},
+}
+```
+
+Use `markers: "minimal"` for breadcrumb-only marker steps, or `markers: "off"` to disable marker steps.
+
 Cloudflare still records primitive Workflow steps. cf-forklift adds structured naming, keyed outputs, and join policies in userland.
 
 ## Important Notes
 
 - Forks do not start branches until joined.
-- required waits for all branches before throwing by default.
+- required waits for all branches before throwing.
 - settled returns keyed success/failure outcomes.
+- Summary markers are enabled by default; use minimal/off to reduce marker steps.
 - waitForEvent remains Cloudflare's native step.waitForEvent; timeout-as-value helpers are not part of v1.
 - Branch names and step names should be deterministic.
-- firstCompleted / race semantics are intentionally not part of the initial API.
+- firstCompleted / race / fail-fast semantics are intentionally not part of the initial API. Cloudflare Workflows do not expose userland interruption for branch steps, so fail-fast would only stop waiting locally; it would not cancel already-started Workflow work.
 
 ## License
 
