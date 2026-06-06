@@ -27,7 +27,7 @@ export class MerchantWorkflow extends WorkflowEntrypoint<
 > {
 	async run(event: WorkflowEvent<{ merchantId: string }>, step: WorkflowStep) {
 		const workflow = withWorkflow(step, {
-			markers: "summary",
+			markers: "minimal",
 		});
 
 		const merchantId = event.payload.merchantId;
@@ -83,7 +83,7 @@ withWorkflow Options
 ```ts
 type Options = {
 	stepNameSeparator?: string;
-	markers?: "off" | "minimal" | "summary";
+	markers?: "off" | "minimal";
 	defaultRequiredFailureMode?: "throwAfterDrain" | "failFast";
 };
 ```
@@ -114,27 +114,9 @@ await workflow.join.settled(fork);
 await workflow.join.quorum(fork, { minimumSuccesses: 2 });
 ```
 
-Event Result Helper
-```ts
-const approval = await workflow.waitForEventResult<ApprovalEvent>(
-	"wait for approval",
-	{
-		type: "merchant-approved",
-		timeout: "30 minutes",
-	}
-);
-
-if (approval.status === "received") {
-	return recordApproval(approval.event);
-}
-
-return runAutomaticReview();
-```
-
 ## Native Rollbacks
-  
+
 ```ts
-Branch steps are normal Cloudflare step.do calls, so native rollback options pass through unchanged.
 const provision = workflow.fork("provision resources", {
 	resource: ({ step }) =>
 		step.do(
@@ -188,6 +170,7 @@ Cloudflare still records primitive Workflow steps. cf-forklift adds structured n
 - required waits for all branches before throwing by default.
 - settled returns keyed success/failure outcomes.
 - quorum waits for all branches, then checks minimumSuccesses.
+- waitForEvent remains Cloudflare's native step.waitForEvent; timeout-as-value helpers are not part of v1.
 - Branch names and step names should be deterministic.
 - firstCompleted / race semantics are intentionally not part of the initial API.
 
